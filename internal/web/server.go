@@ -3,11 +3,13 @@ package web
 import (
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"time"
+
+	webAssets "github.com/brentyates/squaregolf-connector/web"
 
 	"github.com/brentyates/squaregolf-connector/internal/config"
 	"github.com/brentyates/squaregolf-connector/internal/core"
@@ -420,8 +422,9 @@ func (s *Server) getInfiniteTeesStatus() InfiniteTeesStatus {
 func (s *Server) Start(port int) error {
 	router := mux.NewRouter()
 
-	// Serve static files with no-cache headers for development
-	staticHandler := http.StripPrefix("/static/", http.FileServer(http.Dir("./web/static/")))
+	// Serve static files from embedded filesystem
+	staticFS, _ := fs.Sub(webAssets.EmbeddedFiles, "static")
+	staticHandler := http.StripPrefix("/static/", http.FileServer(http.FS(staticFS)))
 	router.PathPrefix("/static/").Handler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 		w.Header().Set("Pragma", "no-cache")
@@ -483,8 +486,13 @@ func (s *Server) Start(port int) error {
 }
 
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
-	indexPath := filepath.Join("web", "index.html")
-	http.ServeFile(w, r, indexPath)
+	indexHTML, err := webAssets.EmbeddedFiles.ReadFile("index.html")
+	if err != nil {
+		http.Error(w, "Internal server error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(indexHTML)
 }
 
 func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
