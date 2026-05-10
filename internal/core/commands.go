@@ -24,6 +24,23 @@ func SwingStickCommand(sequence int, club ClubType, handedness HandednessType) s
 	return fmt.Sprintf("1182%02x%s0%d0000", sequence, club.SwingStickCode, handedness)
 }
 
+// AlignmentStickCommand generates the special "alignment stick" club
+// command that puts the device into alignment-detection mode. The byte
+// sequence here matches captured BLE traffic from the official Square
+// app: clubSel=0x08, type=0x08, handedness, padding.
+//
+// Note: this disagrees with ClubAlignmentStick.RegularCode in older
+// builds (which had the buggy "0008" code). The constant has been
+// updated to "0808" for consistency, so calling
+// ClubCommand(_, ClubAlignmentStick, _) now produces the same bytes
+// as AlignmentStickCommand. We keep this dedicated function because
+// the call site in launch_monitor.StartAlignment reads more clearly
+// and matches the function the (formerly orphaned) test was written
+// for.
+func AlignmentStickCommand(sequence int, handedness HandednessType) string {
+	return fmt.Sprintf("1182%02x08080%d000000", sequence, handedness)
+}
+
 // AlignmentCommand generates alignment command (command ID 1185)
 // confirm: 0 = cancel (exit without saving), 1 = confirm/OK (save calibration)
 // targetAngle: target angle in degrees (will be multiplied by 100 and encoded as int32 little-endian)

@@ -123,8 +123,13 @@ var (
 	ClubApproachWedge = ClubType{RegularCode: "0b06", SwingStickCode: "0b00"}
 	ClubSandWedge     = ClubType{RegularCode: "0c06", SwingStickCode: "0c00"}
 
-	// Alignment stick - special club type used to activate alignment mode
-	ClubAlignmentStick = ClubType{RegularCode: "0008", SwingStickCode: "0008"}
+	// Alignment stick - special club type used to activate alignment mode.
+	// Code is "0808" (clubSel=0x08, type=0x08) matching captured BLE
+	// traffic from the official Square app. Earlier revisions used
+	// "0008" which the device acks but doesn't actually treat as the
+	// alignment stick — the IR scanner stays disabled, and no
+	// 0x11 0x04 alignment notifications are emitted.
+	ClubAlignmentStick = ClubType{RegularCode: "0808", SwingStickCode: "0808"}
 )
 
 // ShotType represents the type of shot

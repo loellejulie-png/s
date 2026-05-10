@@ -526,11 +526,11 @@ func (lm *LaunchMonitor) StartAlignment() error {
 		return nil
 	}
 
-	// First, send club command with alignment stick (clubSel=0x08)
-	// This puts the device in alignment mode (Windows app Awake method)
+	// First, send the alignment-stick club command (clubSel=0x08,
+	// type=0x08). This puts the device in alignment mode.
 	seq := lm.getNextSequence()
 
-	command := ClubCommand(seq, ClubAlignmentStick, handedness)
+	command := AlignmentStickCommand(seq, handedness)
 	err := lm.SendCommand(command)
 	if err != nil {
 		return fmt.Errorf("failed to start alignment: %w", err)
