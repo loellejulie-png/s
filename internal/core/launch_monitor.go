@@ -41,7 +41,24 @@ type LaunchMonitor struct {
 	heartbeatCancel   context.CancelFunc
 	heartbeatCancelMu sync.Mutex
 	bluetoothClient   BluetoothClient
+
+	// Re-arm coalescing. After a shot, multiple paths may try to
+	// re-arm ball detection in rapid succession (club-metrics
+	// callback, GSPro ack callback, fallback timer). Sending two
+	// arming sequences within tens of milliseconds of each other has
+	// been observed to leave the device in a state where it stops
+	// reporting subsequent low-energy shots — particularly very short
+	// putts. We coalesce all re-arms within a short window to a
+	// single BLE writes pair.
+	rearmMu       sync.Mutex
+	lastRearmAt   time.Time
 }
+
+// rearmCoalesceWindow is the minimum time between two ActivateBallDetection
+// calls triggered by post-shot re-arm paths. Calls inside the window are
+// dropped silently — the first call already armed the device and a second
+// call would only race against it.
+const rearmCoalesceWindow = 800 * time.Millisecond
 
 // UpdateBluetoothClient updates the bluetooth client reference
 func (lm *LaunchMonitor) UpdateBluetoothClient(client BluetoothClient) {
@@ -175,6 +192,12 @@ func (lm *LaunchMonitor) HandleShotBallMetrics(bytesList []string) {
 	}
 
 	if lastBallMetrics == nil || lastRawData != rawDataStr {
+		log.Printf("LaunchMonitor: Ball metrics — type=%s speed=%.2f m/s VLA=%.2f° HLA=%.2f° spin=%d rpm",
+			shotMetrics.ShotType,
+			shotMetrics.BallSpeedMPS,
+			shotMetrics.VerticalAngle,
+			shotMetrics.HorizontalAngle,
+			shotMetrics.TotalspinRPM)
 		lm.stateManager.SetLastBallMetrics(shotMetrics)
 
 		// Automatically request club metrics after receiving shot metrics
@@ -194,37 +217,28 @@ func (lm *LaunchMonitor) HandleShotBallMetrics(bytesList []string) {
 		// reactivate hooked off HandleShotClubMetrics never fires and
 		// the device sits idle, silently dropping the next short putt.
 		// Schedule a deferred re-arm and let the club-metrics path
-		// pre-empt it via SetLastClubMetrics if the response does
+		// pre-empt it via the coalescing window if the response does
 		// arrive in time.
 		go lm.scheduleFallbackRearm(shotMetrics)
+	} else {
+		log.Printf("LaunchMonitor: Ball metrics deduped (identical raw data) — type=%s speed=%.2f m/s",
+			shotMetrics.ShotType, shotMetrics.BallSpeedMPS)
 	}
 }
 
 // scheduleFallbackRearm waits ~2.5 s for the device to either deliver
 // club-metrics (which would have already triggered reactivateBallDetection
-// via the existing handler) or stay silent. If LastClubMetrics in the
-// state manager hasn't been refreshed for THIS shot's window by the
-// timeout, we re-arm anyway. The 2.5 s window is long enough that the
-// normal "request → club-metrics" round trip can complete first.
+// via the existing handler) or stay silent. If neither the club-metrics
+// path nor the GSPro-ack path has fired a re-arm by the timeout, we
+// trigger one ourselves. The coalescing window in
+// ReactivateBallDetectionFromSource keeps this from racing if a faster
+// path also fires.
 func (lm *LaunchMonitor) scheduleFallbackRearm(shotMetrics *BallMetrics) {
-	preShotMetrics := lm.stateManager.GetLastClubMetrics()
 	time.Sleep(2500 * time.Millisecond)
-
-	postShotMetrics := lm.stateManager.GetLastClubMetrics()
-	if preShotMetrics != postShotMetrics {
-		// Club metrics arrived (state manager pointer changed) —
-		// the existing reactivate path already handled re-arm.
-		return
-	}
-
 	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
 		return
 	}
-
-	log.Printf("LaunchMonitor: Fallback re-arm fired (no club metrics within 2.5s after %s shot)", shotMetrics.ShotType)
-	if err := lm.ActivateBallDetection(); err != nil {
-		log.Printf("LaunchMonitor: Fallback re-arm failed: %v", err)
-	}
+	lm.ReactivateBallDetectionFromSource(fmt.Sprintf("fallback-%s", shotMetrics.ShotType))
 }
 
 // HandleShotClubMetrics handles shot club metrics notifications (format 11 07 0f)
@@ -368,21 +382,46 @@ func (lm *LaunchMonitor) DeactivateBallDetection() error {
 	return nil
 }
 
-// reactivateBallDetection re-activates ball detection after a shot completes,
-// so the device automatically starts searching for the next ball.
+// reactivateBallDetection re-activates ball detection after a shot completes
+// (internal callers within the core package).
 func (lm *LaunchMonitor) reactivateBallDetection() {
+	lm.ReactivateBallDetectionFromSource("club-metrics")
+}
+
+// ReactivateBallDetectionFromSource is the single re-arm entry point used by
+// every post-shot path (club-metrics callback, GSPro ack, fallback timer).
+// It applies an 800 ms coalescing window so that overlapping triggers don't
+// fire two BLE arming sequences back-to-back — a race we believe was
+// preventing the device from picking up a second short putt taken quickly
+// after the first.
+//
+// `source` is logged so we can tell which path actually fired in the
+// remaining call (and which were coalesced away).
+func (lm *LaunchMonitor) ReactivateBallDetectionFromSource(source string) {
+	lm.rearmMu.Lock()
+	now := time.Now()
+	if !lm.lastRearmAt.IsZero() && now.Sub(lm.lastRearmAt) < rearmCoalesceWindow {
+		elapsed := now.Sub(lm.lastRearmAt)
+		lm.rearmMu.Unlock()
+		log.Printf("LaunchMonitor: Re-arm from %s coalesced (%.0fms since last)", source, float64(elapsed)/float64(time.Millisecond))
+		return
+	}
+	lm.lastRearmAt = now
+	lm.rearmMu.Unlock()
+
 	go func() {
 		// Small delay to let the device finish processing the shot
 		time.Sleep(500 * time.Millisecond)
 
 		if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+			log.Printf("LaunchMonitor: Skip re-arm from %s — not connected", source)
 			return
 		}
 
-		log.Println("LaunchMonitor: Re-activating ball detection after shot")
+		log.Printf("LaunchMonitor: Re-activating ball detection (source=%s)", source)
 		err := lm.ActivateBallDetection()
 		if err != nil {
-			log.Printf("LaunchMonitor: Failed to re-activate ball detection: %v", err)
+			log.Printf("LaunchMonitor: Failed to re-activate ball detection (source=%s): %v", source, err)
 		}
 	}()
 }

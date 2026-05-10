@@ -129,16 +129,9 @@ func (g *Integration) ProcessMessage(rawMessage string) {
 	//   * GSPro itself: "Ball Data received" / "Club & Ball Data received"
 	//   * DrillsGolf / OpenGolfSim: "Shot received successfully"
 	//   * Some custom integrations omit the text entirely.
-	// The previous code only recognised the GSPro phrasing and fell
-	// through to the default branch on others — which meant ball
-	// detection was never re-armed after the shot, and short / low-
-	// energy putts that came in before the next user-triggered re-arm
-	// were silently dropped.
 	if baseMsg.Code >= 200 && baseMsg.Code < 300 {
 		log.Printf("Received shot confirmation from GSPro (code=%d): %s", baseMsg.Code, baseMsg.Message)
-		if err := g.launchMonitor.ActivateBallDetection(); err != nil {
-			log.Printf("Failed to re-arm ball detection after shot: %v", err)
-		}
+		g.launchMonitor.ReactivateBallDetectionFromSource("gspro-ack")
 		return
 	}
 
@@ -147,9 +140,7 @@ func (g *Integration) ProcessMessage(rawMessage string) {
 	switch baseMsg.Message {
 	case "Ball Data received", "Club & Ball Data received", "Shot received successfully":
 		log.Printf("Received shot confirmation from GSPro: %s", baseMsg.Message)
-		if err := g.launchMonitor.ActivateBallDetection(); err != nil {
-			log.Printf("Failed to re-arm ball detection after shot: %v", err)
-		}
+		g.launchMonitor.ReactivateBallDetectionFromSource("gspro-ack-legacy")
 	default:
 		log.Printf("Unknown GSPro message type: %s", baseMsg.Message)
 	}
