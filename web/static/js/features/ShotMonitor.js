@@ -1,4 +1,6 @@
 // features/ShotMonitor.js
+import { ReadyChime } from './ReadyChime.js';
+
 export class ShotMonitor {
     constructor(apiClient, eventBus) {
         this.api = apiClient;
@@ -72,6 +74,7 @@ export class ShotMonitor {
 
     updateStatus(status) {
         this.updateBallPosition(status.ballPosition, status.ballDetected, status.ballReady);
+        ReadyChime.onBallReadyState(!!status.ballReady, !!status.ballDetected);
     }
 
     updateCurrentShot(ballData, clubData) {

@@ -10,6 +10,7 @@ import { AlignmentManager } from '../features/AlignmentManager.js';
 import { SettingsManager } from '../features/SettingsManager.js';
 import { CameraManager } from '../features/CameraManager.js';
 import { ShotMonitor } from '../features/ShotMonitor.js';
+import { ReadyChime } from '../features/ReadyChime.js';
 import { ToastManager } from '../ui/ToastManager.js';
 import { LoadingManager } from '../ui/LoadingManager.js';
 import { ScreenManager } from '../ui/ScreenManager.js';
@@ -397,6 +398,8 @@ export class SquareGolfApp {
                     if (errorElement) errorElement.style.display = 'none';
                     if (armBtn) armBtn.disabled = true;
                     this.loading.hide();
+                    // Reset chime so the next reconnect-and-place re-fires.
+                    ReadyChime.reset();
                     break;
                 case 'error':
                     statusElement.textContent = 'Error';
@@ -885,6 +888,7 @@ export class SquareGolfApp {
         const soundEnabledEl = document.getElementById('soundEnabled');
         if (soundEnabledEl) soundEnabledEl.checked = soundEnabled;
         this.soundEnabled = soundEnabled;
+        ReadyChime.setEnabled(soundEnabled);
 
         const gsproIP = document.getElementById('gsproIP');
         const gsproPort = document.getElementById('gsproPort');
@@ -914,6 +918,7 @@ export class SquareGolfApp {
         const swingStickMode = document.querySelector('input[name="swingStickMode"]:checked')?.value || 'off';
         const soundEnabled = !!document.getElementById('soundEnabled')?.checked;
         this.soundEnabled = soundEnabled;
+        ReadyChime.setEnabled(soundEnabled);
         await this.settingsManager.save({ spinMode, handedness, swingStickMode, soundEnabled });
     }
 }
