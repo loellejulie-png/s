@@ -298,7 +298,16 @@ func (lm *LaunchMonitor) ReadBatteryLevel() (int, error) {
 	return batteryLevel, nil
 }
 
-// ActivateBallDetection activates ball detection mode
+// ActivateBallDetection activates ball detection mode by sending the
+// full sequence: club command + DetectBall command. Use this for
+// initial connection, club changes, or any path where the active club
+// might have changed.
+//
+// For *post-shot* re-arming where the club hasn't changed, prefer
+// rearmDetectionOnly() — re-sending the club command on every shot has
+// been observed to disrupt the device's per-club detection tuning,
+// causing the next low-energy shot (typically a short putt) to be
+// silently dropped.
 func (lm *LaunchMonitor) ActivateBallDetection() error {
 	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
 		return fmt.Errorf("not connected to device")
@@ -355,6 +364,37 @@ func (lm *LaunchMonitor) ActivateBallDetection() error {
 		return fmt.Errorf("failed to send detect ball command: %w", err)
 	}
 
+	return nil
+}
+
+// rearmDetectionOnly sends just the DetectBall command, leaving the
+// device's currently-selected club untouched. Used by the post-shot
+// auto-rearm path to avoid disrupting per-club detection tuning.
+//
+// Why this matters: when a putter is selected, the device tunes its
+// sensors for low-energy shots. Re-sending the club command on every
+// shot — as the previous reactivateBallDetection did — appears to
+// briefly reset that tuning and cause the next short putt to be
+// missed entirely (no 0x11 0x02 ball-metrics notification at all).
+// The official Square app and upstream SquareConnector handle short
+// putts cleanly; sending only the DetectBall arm is consistent with
+// what the device actually needs to keep listening.
+func (lm *LaunchMonitor) rearmDetectionOnly() error {
+	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+		return fmt.Errorf("not connected to device")
+	}
+
+	spinMode := lm.stateManager.GetSpinMode()
+	if spinMode == nil {
+		defaultSpinMode := Advanced
+		spinMode = &defaultSpinMode
+	}
+
+	seq := lm.getNextSequence()
+	detectCommand := DetectBallCommand(seq, Activate, *spinMode)
+	if err := lm.SendCommand(detectCommand); err != nil {
+		return fmt.Errorf("failed to send detect ball command: %w", err)
+	}
 	return nil
 }
 
@@ -418,10 +458,12 @@ func (lm *LaunchMonitor) ReactivateBallDetectionFromSource(source string) {
 			return
 		}
 
-		log.Printf("LaunchMonitor: Re-activating ball detection (source=%s)", source)
-		err := lm.ActivateBallDetection()
+		// Use the lightweight re-arm: only sends DetectBall, doesn't
+		// re-send the club command. See rearmDetectionOnly() for why.
+		log.Printf("LaunchMonitor: Re-arming detection (source=%s)", source)
+		err := lm.rearmDetectionOnly()
 		if err != nil {
-			log.Printf("LaunchMonitor: Failed to re-activate ball detection (source=%s): %v", source, err)
+			log.Printf("LaunchMonitor: Failed to re-arm detection (source=%s): %v", source, err)
 		}
 	}()
 }

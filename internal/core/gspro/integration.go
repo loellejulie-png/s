@@ -123,15 +123,36 @@ func (g *Integration) ProcessMessage(rawMessage string) {
 		return
 	}
 
-	// Anything in the 2xx range is a successful shot acknowledgement.
-	// We accept it regardless of the Message text because different
+	// Code 200 is a successful shot acknowledgement. We accept it
+	// regardless of the Message text because different
 	// GSPro-compatible sims phrase it differently:
 	//   * GSPro itself: "Ball Data received" / "Club & Ball Data received"
 	//   * DrillsGolf / OpenGolfSim: "Shot received successfully"
-	//   * Some custom integrations omit the text entirely.
-	if baseMsg.Code >= 200 && baseMsg.Code < 300 {
+	if baseMsg.Code == 200 {
 		log.Printf("Received shot confirmation from GSPro (code=%d): %s", baseMsg.Code, baseMsg.Message)
 		g.launchMonitor.ReactivateBallDetectionFromSource("gspro-ack")
+		return
+	}
+
+	// Code 201 is a player-info update used by Muni Golf and similar
+	// non-GSPro sims. Treat it the same way we treat the
+	// "GSPro Player Information" message above: parse the embedded
+	// Player object, update active-club state, and signal ready so
+	// the device gets the right club/handedness for the next shot.
+	// (Previously this fell through to a generic 2xx "shot ack"
+	// branch which incorrectly re-armed and never updated the club —
+	// short putts from a sim that announces club selection via 201
+	// would arrive at the device while it was still in the previous
+	// club's detection mode, with the wrong sensitivity.)
+	if baseMsg.Code == 201 {
+		var playerInfo PlayerInfo
+		if err := json.Unmarshal([]byte(rawMessage), &playerInfo); err != nil {
+			log.Printf("Error parsing player info (code=201): %v", err)
+			return
+		}
+		log.Printf("Received player info from sim (code=201): %s", baseMsg.Message)
+		g.handlePlayerMessage(&playerInfo)
+		g.handleGSProReadyMessage()
 		return
 	}
 
@@ -142,7 +163,7 @@ func (g *Integration) ProcessMessage(rawMessage string) {
 		log.Printf("Received shot confirmation from GSPro: %s", baseMsg.Message)
 		g.launchMonitor.ReactivateBallDetectionFromSource("gspro-ack-legacy")
 	default:
-		log.Printf("Unknown GSPro message type: %s", baseMsg.Message)
+		log.Printf("Unknown GSPro message: code=%d msg=%q", baseMsg.Code, baseMsg.Message)
 	}
 }
 
