@@ -187,6 +187,43 @@ func (lm *LaunchMonitor) HandleShotBallMetrics(bytesList []string) {
 				log.Printf("Failed to request club metrics: %v", err)
 			}
 		}
+
+		// Fallback re-arm: if a club-metrics response (0x11 0x07 …)
+		// never arrives — which we have observed for very short putts
+		// where the device emits ball metrics but no follow-up — the
+		// reactivate hooked off HandleShotClubMetrics never fires and
+		// the device sits idle, silently dropping the next short putt.
+		// Schedule a deferred re-arm and let the club-metrics path
+		// pre-empt it via SetLastClubMetrics if the response does
+		// arrive in time.
+		go lm.scheduleFallbackRearm(shotMetrics)
+	}
+}
+
+// scheduleFallbackRearm waits ~2.5 s for the device to either deliver
+// club-metrics (which would have already triggered reactivateBallDetection
+// via the existing handler) or stay silent. If LastClubMetrics in the
+// state manager hasn't been refreshed for THIS shot's window by the
+// timeout, we re-arm anyway. The 2.5 s window is long enough that the
+// normal "request → club-metrics" round trip can complete first.
+func (lm *LaunchMonitor) scheduleFallbackRearm(shotMetrics *BallMetrics) {
+	preShotMetrics := lm.stateManager.GetLastClubMetrics()
+	time.Sleep(2500 * time.Millisecond)
+
+	postShotMetrics := lm.stateManager.GetLastClubMetrics()
+	if preShotMetrics != postShotMetrics {
+		// Club metrics arrived (state manager pointer changed) —
+		// the existing reactivate path already handled re-arm.
+		return
+	}
+
+	if lm.bluetoothClient == nil || !lm.bluetoothClient.IsConnected() {
+		return
+	}
+
+	log.Printf("LaunchMonitor: Fallback re-arm fired (no club metrics within 2.5s after %s shot)", shotMetrics.ShotType)
+	if err := lm.ActivateBallDetection(); err != nil {
+		log.Printf("LaunchMonitor: Fallback re-arm failed: %v", err)
 	}
 }
 

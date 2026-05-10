@@ -5,6 +5,11 @@ package gspro
 
 // Message represents the base message structure from GSPro
 type Message struct {
+	// Code is the response code on shot acks. GSPro and most
+	// GSPro-compatible sims (DrillsGolf, OpenGolfSim, etc.) send 200
+	// on success but use slightly different free-text Message
+	// strings, so we treat Code as authoritative when present.
+	Code    int    `json:"Code,omitempty"`
 	Message string `json:"Message"`
 }
 
