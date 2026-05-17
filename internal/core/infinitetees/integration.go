@@ -97,8 +97,7 @@ func (it *Integration) ProcessMessage(rawMessage string) {
 			log.Printf("[%s] Error parsing player info: %v", it.Name(), err)
 			return
 		}
-		it.handlePlayerMessage(&playerInfo)
-		it.handleReadyMessage()
+		it.applyPlayerInfo(&playerInfo, "infinitetees-player-info")
 	case "Ball Data received", "Club & Ball Data received", "Shot received successfully":
 		log.Printf("[%s] Shot data confirmed by server", it.Name())
 	default:
@@ -112,6 +111,36 @@ func (it *Integration) handleReadyMessage() {
 		log.Printf("[%s] Failed to activate ball detection: %v", it.Name(), err)
 		return
 	}
+}
+
+// applyPlayerInfo updates state from a Player Information message and
+// re-arms the device using the lightweight path when the reported
+// club/handedness is the same as last time. Infinite Tees broadcasts
+// Player Information frequently during play; re-sending the club
+// command on every one of those resets the device's per-club
+// low-energy tuning and drops the next short putt — exactly the
+// "putts under 8ft don't register" symptom reported by Infinite Tees
+// users.
+func (it *Integration) applyPlayerInfo(newInfo *PlayerInfo, source string) {
+	heavy := it.playerInfoChanged(newInfo)
+	it.handlePlayerMessage(newInfo)
+	if heavy {
+		it.handleReadyMessage()
+	} else {
+		it.launchMonitor.ReactivateBallDetectionFromSource(source + "-unchanged")
+	}
+}
+
+// playerInfoChanged reports whether a new Player Information message
+// represents a genuine club/handedness change relative to the last
+// one we saw. First call after connect counts as a change so the
+// initial arm still re-sends the club command.
+func (it *Integration) playerInfoChanged(newInfo *PlayerInfo) bool {
+	if it.lastPlayerInfo == nil {
+		return true
+	}
+	return it.lastPlayerInfo.Player.Club != newInfo.Player.Club ||
+		it.lastPlayerInfo.Player.Handed != newInfo.Player.Handed
 }
 
 func (it *Integration) handlePlayerMessage(playerInfo *PlayerInfo) {

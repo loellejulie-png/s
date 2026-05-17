@@ -118,8 +118,7 @@ func (g *Integration) ProcessMessage(rawMessage string) {
 			log.Printf("Error parsing player info: %v", err)
 			return
 		}
-		g.handlePlayerMessage(&playerInfo)
-		g.handleGSProReadyMessage()
+		g.applyPlayerInfo(&playerInfo, "gspro-player-info")
 		return
 	}
 
@@ -151,8 +150,7 @@ func (g *Integration) ProcessMessage(rawMessage string) {
 			return
 		}
 		log.Printf("Received player info from sim (code=201): %s", baseMsg.Message)
-		g.handlePlayerMessage(&playerInfo)
-		g.handleGSProReadyMessage()
+		g.applyPlayerInfo(&playerInfo, "gspro-player-info-201")
 		return
 	}
 
@@ -173,6 +171,43 @@ func (g *Integration) handleGSProReadyMessage() {
 		log.Printf("Failed to activate ball detection: %v", err)
 		return
 	}
+}
+
+// applyPlayerInfo updates state from a Player Information message and
+// re-arms the device — using the *lightweight* re-arm path when the
+// reported club/handedness is the same as last time. Sims like Muni
+// Golf and OpenGolfSim broadcast Player Information after every shot
+// (e.g. to indicate whose turn is next). Calling the heavy
+// ActivateBallDetection — which re-sends the club command — on each
+// of those messages briefly resets the device's per-club detection
+// tuning. With the putter selected that wipes the low-energy tuning
+// and the next short putt is silently dropped at the BLE layer — no
+// 0x11 0x02 frame is emitted at all. Matches the "putts under ~8ft
+// don't register" reports from users on Muni Golf and similar sims.
+//
+// `source` is forwarded to the re-arm coalescing logger so it's
+// possible to tell from logs whether a given re-arm came from a
+// genuine club change vs an unchanged re-broadcast.
+func (g *Integration) applyPlayerInfo(newInfo *PlayerInfo, source string) {
+	heavy := g.playerInfoChanged(newInfo)
+	g.handlePlayerMessage(newInfo)
+	if heavy {
+		g.handleGSProReadyMessage()
+	} else {
+		g.launchMonitor.ReactivateBallDetectionFromSource(source + "-unchanged")
+	}
+}
+
+// playerInfoChanged reports whether a new Player Information message
+// represents a genuine club/handedness change relative to the last
+// one we saw. Treated as a change when no prior info exists, so the
+// first message after connect still does a full arm.
+func (g *Integration) playerInfoChanged(newInfo *PlayerInfo) bool {
+	if g.lastPlayerInfo == nil {
+		return true
+	}
+	return g.lastPlayerInfo.Player.Club != newInfo.Player.Club ||
+		g.lastPlayerInfo.Player.Handed != newInfo.Player.Handed
 }
 
 func (g *Integration) handlePlayerMessage(playerInfo *PlayerInfo) {

@@ -113,8 +113,7 @@ func (o *Integration) ProcessMessage(rawMessage string) {
 			log.Printf("Error parsing player info: %v", err)
 			return
 		}
-		o.handlePlayerMessage(&playerInfo)
-		o.handleReadyMessage()
+		o.applyPlayerInfo(&playerInfo, "openconnect-player-info")
 	case "Ball Data received", "Club & Ball Data received", "Shot received successfully":
 		// Use the lightweight re-arm (DetectBall only — no club command).
 		// Re-sending the club command on every shot has been observed to
@@ -138,6 +137,35 @@ func (o *Integration) handleReadyMessage() {
 		log.Printf("Failed to activate ball detection: %v", err)
 		return
 	}
+}
+
+// applyPlayerInfo updates state from a Player Information message and
+// re-arms the device using the lightweight path when the reported
+// club/handedness is the same as last time. See the gspro integration
+// for the full rationale — short version: sims often broadcast Player
+// Information after every shot, and the heavy ActivateBallDetection
+// re-sends the club command, which resets the device's per-club
+// low-energy tuning and drops the next short putt.
+func (o *Integration) applyPlayerInfo(newInfo *PlayerInfo, source string) {
+	heavy := o.playerInfoChanged(newInfo)
+	o.handlePlayerMessage(newInfo)
+	if heavy {
+		o.handleReadyMessage()
+	} else {
+		o.launchMonitor.ReactivateBallDetectionFromSource(source + "-unchanged")
+	}
+}
+
+// playerInfoChanged reports whether a new Player Information message
+// represents a genuine club/handedness change relative to the last
+// one we saw. First call after connect counts as a change so the
+// initial arm still re-sends the club command.
+func (o *Integration) playerInfoChanged(newInfo *PlayerInfo) bool {
+	if o.lastPlayerInfo == nil {
+		return true
+	}
+	return o.lastPlayerInfo.Player.Club != newInfo.Player.Club ||
+		o.lastPlayerInfo.Player.Handed != newInfo.Player.Handed
 }
 
 func (o *Integration) handlePlayerMessage(playerInfo *PlayerInfo) {
